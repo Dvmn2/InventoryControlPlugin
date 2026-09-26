@@ -1,0 +1,11 @@
+# Язык сообщений плагина: "ru", "en" или "auto".
+# "auto" — язык определяется индивидуально для каждого отправителя команды:
+# для игрока берётся его игровая локаль, для консоли — английский.
+#
+# Plugin message language: "ru", "en" or "auto".
+# "auto" resolves per command sender: a player's client locale is used,
+# console falls back to English.
+settings:
+  language: auto
+  require-client-mod: true
+  mod-check-timeout-seconds: 10
