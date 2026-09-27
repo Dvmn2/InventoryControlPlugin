@@ -15,9 +15,14 @@ import java.util.logging.Level;
  * Формат:
  * <pre>
  * &lt;uuid&gt;:
- *   slots: 10                        # хотбар + основной инвентарь, 0..36
- *   locked-cells: [36, 5]            # индивидуально заблокированные ячейки PlayerInventory (0-40:
- *                                    # 0-8 хотбар, 9-35 инвентарь, 36-39 броня, 40 оффхенд)
+ *   locked-cells: [36, 5]            # заблокированные ячейки PlayerInventory (0-40:
+ *                                    # 0-8 хотбар, 9-35 инвентарь, 36-39 броня, 40 оффхенд).
+ *                                    # /inventorycontrol set N — это массовая правка того же
+ *                                    # списка: слоты хранилища с индексом >= N (в порядке
+ *                                    # открытия, см. InventoryComputer#storageOrder) добавляются
+ *                                    # сюда, с индексом < N — снимаются. Отдельного "лимита N"
+ *                                    # больше не существует — это лишь способ быстро заполнить
+ *                                    # locked-cells.
  *   locked-crafting-cells: [1, 5]    # заблокированные ячейки личного крафта 2x2 (id 1-5, см. CraftingCell)
  * </pre>
  * Игрок без записи — без ограничений. Записи без секции (старый формат) молча игнорируются.
@@ -25,12 +30,11 @@ import java.util.logging.Level;
 public final class InventoryDataManager {
 
     private static final class Limits {
-        int slots = InventoryComputer.MAX_SLOTS;
         final Set<Integer> lockedCells = new HashSet<>();
         final Set<Integer> lockedCraftingCells = new HashSet<>();
 
         boolean isDefault() {
-            return slots == InventoryComputer.MAX_SLOTS && lockedCells.isEmpty() && lockedCraftingCells.isEmpty();
+            return lockedCells.isEmpty() && lockedCraftingCells.isEmpty();
         }
     }
 
@@ -62,7 +66,6 @@ public final class InventoryDataManager {
                 continue;
             }
             Limits limits = new Limits();
-            limits.slots = InventoryComputer.clamp(section.getInt("slots", InventoryComputer.MAX_SLOTS));
             for (int slot : section.getIntegerList("locked-cells")) {
                 if (slot >= 0 && slot <= InventoryComputer.LAST_SLOT) {
                     limits.lockedCells.add(slot);
@@ -87,7 +90,6 @@ public final class InventoryDataManager {
         YamlConfiguration cfg = new YamlConfiguration();
         for (Map.Entry<UUID, Limits> e : values.entrySet()) {
             ConfigurationSection section = cfg.createSection(e.getKey().toString());
-            section.set("slots", e.getValue().slots);
             section.set("locked-cells", new ArrayList<>(e.getValue().lockedCells));
             section.set("locked-crafting-cells", new ArrayList<>(e.getValue().lockedCraftingCells));
         }
@@ -103,9 +105,25 @@ public final class InventoryDataManager {
 
     // ---------- чтение ----------
 
+    /**
+     * Количество сейчас открытых слотов хранилища (хотбар + основной инвентарь).
+     * Отдельного лимита N не хранится — это просто подсчёт по факту, нужен только
+     * для отображения в {@code /inventorycontrol get}. Если внутри диапазона вперемешку
+     * есть точечные блокировки и открытые ячейки, число всё равно честное — это именно
+     * "сколько сейчас открыто", а не позиция какой-то границы.
+     */
     public int getSlots(UUID uuid) {
         Limits l = values.get(uuid);
-        return l == null ? InventoryComputer.MAX_SLOTS : l.slots;
+        if (l == null) {
+            return InventoryComputer.MAX_SLOTS;
+        }
+        int open = 0;
+        for (int slot : InventoryComputer.storageOrder()) {
+            if (!l.lockedCells.contains(slot)) {
+                open++;
+            }
+        }
+        return open;
     }
 
     public int getSlots(Player player) {
@@ -122,7 +140,7 @@ public final class InventoryDataManager {
     }
 
     /**
-     * @return копия набора индивидуально заблокированных ячеек (0-40)
+     * @return копия набора заблокированных ячеек (0-40)
      */
     public Set<Integer> getLockedCells(UUID uuid) {
         Limits l = values.get(uuid);
@@ -157,11 +175,15 @@ public final class InventoryDataManager {
     }
 
     /**
-     * Все открытые слоты игрока в нумерации PlayerInventory:
-     * первые N слотов хранилища + вся броня/оффхенд, минус ручные блокировки.
+     * Все открытые слоты игрока в нумерации PlayerInventory: все слоты хранилища
+     * (0..35) и вся броня/оффхенд, минус заблокированные ячейки. Это единственный
+     * источник истины об "открытости" — им пользуются и {@code InventoryEnforcer},
+     * и {@code SlotOverviewGui}, поэтому они больше не могут разойтись между собой
+     * (раньше был отдельный "лимит N", из-за чего GUI мог показывать красным ячейку,
+     * которую клик помечал как открытую, и наоборот).
      */
     public Set<Integer> getUnlockedSlots(UUID uuid) {
-        Set<Integer> result = new HashSet<>(InventoryComputer.unlockedStorageSlots(getSlots(uuid)));
+        Set<Integer> result = new HashSet<>(InventoryComputer.storageOrder());
         for (EquipmentPart part : EquipmentPart.values()) {
             result.add(part.getSlot());
         }
@@ -174,9 +196,28 @@ public final class InventoryDataManager {
 
     // ---------- запись ----------
 
+    /**
+     * Массово выставляет открытыми первые {@code amount} слотов хранилища (хотбар +
+     * основной инвентарь, в порядке открытия — см. {@link InventoryComputer#storageOrder()}),
+     * а все слоты хранилища после них — блокирует. Экипировку (броню/оффхенд) и личный
+     * крафт не трогает.
+     * <p>
+     * Технически это просто массовая правка того же набора ячеек, что и
+     * {@link #setCellLocked} — отдельного "лимита N" больше не существует, поэтому эта
+     * команда и {@code SlotOverviewGui} всегда согласованы между собой.
+     */
     public void setSlots(UUID uuid, int amount) {
+        int clamped = InventoryComputer.clamp(amount);
         Limits l = values.computeIfAbsent(uuid, k -> new Limits());
-        l.slots = InventoryComputer.clamp(amount);
+        List<Integer> order = InventoryComputer.storageOrder();
+        for (int i = 0; i < order.size(); i++) {
+            int slot = order.get(i);
+            if (i < clamped) {
+                l.lockedCells.remove(slot);
+            } else {
+                l.lockedCells.add(slot);
+            }
+        }
         cleanup(uuid, l);
         save();
     }
@@ -195,9 +236,9 @@ public final class InventoryDataManager {
     }
 
     /**
-     * Индивидуально блокирует/разблокирует конкретную ячейку PlayerInventory (0-40).
-     * В отличие от {@link #setSlots}, никогда не "открывает" слот сверх лимита N —
-     * только добавляет/снимает точечную блокировку.
+     * Блокирует/разблокирует одну конкретную ячейку PlayerInventory (0-40) точечно,
+     * не трогая остальные ячейки. Массовая версия для всего диапазона хранилища —
+     * {@link #setSlots}.
      */
     public void setCellLocked(UUID uuid, int slot, boolean locked) {
         Limits l = values.computeIfAbsent(uuid, k -> new Limits());

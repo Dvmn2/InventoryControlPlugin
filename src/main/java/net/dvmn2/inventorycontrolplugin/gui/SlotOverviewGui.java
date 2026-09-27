@@ -10,8 +10,11 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
 
 /**
  * Интерактивный обзор ячеек инвентаря игрока в виде двойного сундука (54 слота).
@@ -19,15 +22,19 @@ import java.util.UUID;
  * Раскладка (см. {@link #buildLayout()}):
  * <pre>
  * 0 ботинки | 1 поножи | 2 нагрудник | 3 шлем | 4 - | 5 крафт1 | 6 крафт2 | 7 - | 8 крафт5(результат)
- * 9 оффхенд | 10-13 -             | 14 крафт3 | 15 крафт4 | 16-17 -
+ * 9 оффхенд | 10-13 - | 14 крафт3 | 15 крафт4 | 16-17 -
  * 18-26: верхняя строка инвентаря (PlayerInventory 9-17)
  * 27-35: центральная строка (18-26)
  * 36-44: нижняя строка (27-35)
  * 45-53: хотбар (0-8)
  * </pre>
  * Серое стекло — декоративный placeholder (клик игнорируется). Красное стекло —
- * заблокированная ячейка, пусто — открытая. Клик по не-placeholder ячейке
+ * заблокированная ячейка, зелёное — открытая. Клик по зелёной/красной ячейке
  * переключает её блокировку и сразу применяется через {@code InventoryEnforcer#enforce}.
+ * <p>
+ * Пока администратор смотрит на это окно, его собственный инвентарь временно
+ * скрывается (заменяется пустым) — см. {@link #open} / {@link #restore} —
+ * чтобы он не видел свои вещи под окном обзора.
  */
 public final class SlotOverviewGui {
 
@@ -36,6 +43,11 @@ public final class SlotOverviewGui {
     private static final int CRAFT_BASE = 100; // значения 101..105 — id ячейки крафта (1..5)
 
     private static final int[] LAYOUT = buildLayout();
+
+    /**
+     * Инвентарь администратора, скрытый на время просмотра GUI (см. {@link #open}/{@link #restore}).
+     */
+    private static final Map<UUID, ItemStack[]> HIDDEN_ADMIN_CONTENTS = new HashMap<>();
 
     private SlotOverviewGui() {
     }
@@ -82,6 +94,7 @@ public final class SlotOverviewGui {
         Inventory inv = Bukkit.createInventory(holder, SIZE, Component.text("Ячейки: " + target.getName()));
         holder.setInventory(inv);
         render(inv, target.getUniqueId(), plugin.getDataManager());
+        hideAdminInventory(admin);
         admin.openInventory(inv);
     }
 
@@ -94,9 +107,13 @@ public final class SlotOverviewGui {
                 inv.setItem(raw, pane(Material.GRAY_STAINED_GLASS_PANE));
             } else if (v >= CRAFT_BASE) {
                 int cellId = v - CRAFT_BASE;
-                inv.setItem(raw, lockedCraft.contains(cellId) ? pane(Material.RED_STAINED_GLASS_PANE) : null);
+                inv.setItem(raw, pane(lockedCraft.contains(cellId)
+                        ? Material.RED_STAINED_GLASS_PANE
+                        : Material.GREEN_STAINED_GLASS_PANE));
             } else {
-                inv.setItem(raw, unlocked.contains(v) ? null : pane(Material.RED_STAINED_GLASS_PANE));
+                inv.setItem(raw, pane(unlocked.contains(v)
+                        ? Material.GREEN_STAINED_GLASS_PANE
+                        : Material.RED_STAINED_GLASS_PANE));
             }
         }
     }
@@ -136,5 +153,47 @@ public final class SlotOverviewGui {
             item.setItemMeta(meta);
         }
         return item;
+    }
+
+    // ------------------------------------------------------------------
+    // Скрытие/восстановление инвентаря администратора на время просмотра GUI
+    // ------------------------------------------------------------------
+
+    private static void hideAdminInventory(Player admin) {
+        ItemStack[] contents = admin.getInventory().getContents();
+        ItemStack[] saved = new ItemStack[contents.length];
+        for (int i = 0; i < contents.length; i++) {
+            saved[i] = contents[i] == null ? null : contents[i].clone();
+        }
+        HIDDEN_ADMIN_CONTENTS.put(admin.getUniqueId(), saved);
+        admin.getInventory().setContents(new ItemStack[contents.length]);
+    }
+
+    /**
+     * Возвращает администратору его настоящий инвентарь после закрытия GUI.
+     */
+    public static void restore(Player admin) {
+        ItemStack[] saved = HIDDEN_ADMIN_CONTENTS.remove(admin.getUniqueId());
+        if (saved != null) {
+            admin.getInventory().setContents(saved);
+        }
+    }
+
+    /**
+     * Подстраховка на выключение плагина: если сервер остановили, пока кто-то
+     * смотрел GUI, никто не должен потерять свой скрытый инвентарь.
+     */
+    public static void restoreAll(InventoryControlPlugin plugin) {
+        for (Map.Entry<UUID, ItemStack[]> e : HIDDEN_ADMIN_CONTENTS.entrySet()) {
+            Player admin = Bukkit.getPlayer(e.getKey());
+            if (admin != null) {
+                admin.getInventory().setContents(e.getValue());
+            } else {
+                plugin.getLogger().log(Level.WARNING,
+                        "Администратор {0} офлайн при выключении плагина — скрытый инвентарь не восстановлен (останется прежним при следующем входе).",
+                        e.getKey());
+            }
+        }
+        HIDDEN_ADMIN_CONTENTS.clear();
     }
 }

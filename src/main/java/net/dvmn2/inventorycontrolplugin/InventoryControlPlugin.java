@@ -2,6 +2,7 @@ package net.dvmn2.inventorycontrolplugin;
 
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.dvmn2.inventorycontrolplugin.commands.InventoryCommand;
+import net.dvmn2.inventorycontrolplugin.gui.SlotOverviewGui;
 import net.dvmn2.inventorycontrolplugin.gui.SlotOverviewGuiListener;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -41,8 +42,6 @@ public final class InventoryControlPlugin extends JavaPlugin {
 
         this.enforcer = new InventoryEnforcer(this);
         getServer().getPluginManager().registerEvents(enforcer, this);
-
-        getServer().getPluginManager().registerEvents(enforcer, this);
         getServer().getPluginManager().registerEvents(new SlotOverviewGuiListener(this), this);
 
         // Канал для клиентского Fabric-мода (визуальная блокировка слотов на клиенте).
@@ -68,6 +67,9 @@ public final class InventoryControlPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // Подстраховка: если кто-то смотрел /inventorycontrol gui в момент выключения,
+        // его временно скрытый инвентарь нужно вернуть, а не потерять.
+        SlotOverviewGui.restoreAll(this);
         if (dataManager != null) {
             dataManager.save();
         }
