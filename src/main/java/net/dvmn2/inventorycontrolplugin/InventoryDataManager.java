@@ -15,20 +15,22 @@ import java.util.logging.Level;
  * Формат:
  * <pre>
  * &lt;uuid&gt;:
- *   slots: 10            # хотбар + основной инвентарь, 0..36
- *   closed: [OFFHAND, HELMET]   # закрытые части экипировки
+ *   slots: 10                        # хотбар + основной инвентарь, 0..36
+ *   locked-cells: [36, 5]            # индивидуально заблокированные ячейки PlayerInventory (0-40:
+ *                                    # 0-8 хотбар, 9-35 инвентарь, 36-39 броня, 40 оффхенд)
+ *   locked-crafting-cells: [1, 5]    # заблокированные ячейки личного крафта 2x2 (id 1-5, см. CraftingCell)
  * </pre>
- * Игрок без записи — без ограничений (36 слотов, вся экипировка открыта).
- * Записи старого формата (uuid: число) игнорируются.
+ * Игрок без записи — без ограничений. Записи без секции (старый формат) молча игнорируются.
  */
 public final class InventoryDataManager {
 
     private static final class Limits {
         int slots = InventoryComputer.MAX_SLOTS;
-        final EnumSet<EquipmentPart> closed = EnumSet.noneOf(EquipmentPart.class);
+        final Set<Integer> lockedCells = new HashSet<>();
+        final Set<Integer> lockedCraftingCells = new HashSet<>();
 
         boolean isDefault() {
-            return slots == InventoryComputer.MAX_SLOTS && closed.isEmpty();
+            return slots == InventoryComputer.MAX_SLOTS && lockedCells.isEmpty() && lockedCraftingCells.isEmpty();
         }
     }
 
@@ -47,7 +49,6 @@ public final class InventoryDataManager {
             return;
         }
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
-        boolean legacyFound = false;
         for (String key : cfg.getKeys(false)) {
             UUID uuid;
             try {
@@ -58,24 +59,27 @@ public final class InventoryDataManager {
             }
             ConfigurationSection section = cfg.getConfigurationSection(key);
             if (section == null) {
-                legacyFound = true; // старый формат "uuid: число"
                 continue;
             }
             Limits limits = new Limits();
             limits.slots = InventoryComputer.clamp(section.getInt("slots", InventoryComputer.MAX_SLOTS));
-            for (String name : section.getStringList("closed")) {
-                try {
-                    limits.closed.add(EquipmentPart.valueOf(name.toUpperCase(Locale.ROOT)));
-                } catch (IllegalArgumentException ex) {
-                    plugin.getLogger().warning("Неизвестная часть экипировки в players.yml: " + name);
+            for (int slot : section.getIntegerList("locked-cells")) {
+                if (slot >= 0 && slot <= InventoryComputer.LAST_SLOT) {
+                    limits.lockedCells.add(slot);
+                } else {
+                    plugin.getLogger().warning("players.yml: некорректная ячейка " + slot + " у " + key);
+                }
+            }
+            for (int cellId : section.getIntegerList("locked-crafting-cells")) {
+                if (CraftingCell.byId(cellId) != null) {
+                    limits.lockedCraftingCells.add(cellId);
+                } else {
+                    plugin.getLogger().warning("players.yml: некорректная ячейка крафта " + cellId + " у " + key);
                 }
             }
             if (!limits.isDefault()) {
                 values.put(uuid, limits);
             }
-        }
-        if (legacyFound) {
-            plugin.getLogger().warning("players.yml содержит записи старого формата — они проигнорированы (лимиты сброшены).");
         }
     }
 
@@ -84,11 +88,8 @@ public final class InventoryDataManager {
         for (Map.Entry<UUID, Limits> e : values.entrySet()) {
             ConfigurationSection section = cfg.createSection(e.getKey().toString());
             section.set("slots", e.getValue().slots);
-            List<String> closed = new ArrayList<>();
-            for (EquipmentPart part : e.getValue().closed) {
-                closed.add(part.name());
-            }
-            section.set("closed", closed);
+            section.set("locked-cells", new ArrayList<>(e.getValue().lockedCells));
+            section.set("locked-crafting-cells", new ArrayList<>(e.getValue().lockedCraftingCells));
         }
         try {
             if (!plugin.getDataFolder().exists()) {
@@ -102,9 +103,6 @@ public final class InventoryDataManager {
 
     // ---------- чтение ----------
 
-    /**
-     * Лимит слотов хранилища (хотбар + основной инвентарь). Не задан — максимум.
-     */
     public int getSlots(UUID uuid) {
         Limits l = values.get(uuid);
         return l == null ? InventoryComputer.MAX_SLOTS : l.slots;
@@ -115,20 +113,43 @@ public final class InventoryDataManager {
     }
 
     public boolean isPartOpen(UUID uuid, EquipmentPart part) {
+        return !isCellLocked(uuid, part.getSlot());
+    }
+
+    public boolean isCellLocked(UUID uuid, int slot) {
         Limits l = values.get(uuid);
-        return l == null || !l.closed.contains(part);
+        return l != null && l.lockedCells.contains(slot);
     }
 
     /**
-     * @return копия набора закрытых частей экипировки
+     * @return копия набора индивидуально заблокированных ячеек (0-40)
      */
-    public Set<EquipmentPart> getClosedParts(UUID uuid) {
-        EnumSet<EquipmentPart> copy = EnumSet.noneOf(EquipmentPart.class);
+    public Set<Integer> getLockedCells(UUID uuid) {
         Limits l = values.get(uuid);
-        if (l != null) {
-            copy.addAll(l.closed);
+        return l == null ? Set.of() : Set.copyOf(l.lockedCells);
+    }
+
+    public Set<EquipmentPart> getClosedParts(UUID uuid) {
+        EnumSet<EquipmentPart> closed = EnumSet.noneOf(EquipmentPart.class);
+        for (EquipmentPart part : EquipmentPart.values()) {
+            if (isCellLocked(uuid, part.getSlot())) {
+                closed.add(part);
+            }
         }
-        return copy;
+        return closed;
+    }
+
+    public boolean isCraftingCellLocked(UUID uuid, int cellId) {
+        Limits l = values.get(uuid);
+        return l != null && l.lockedCraftingCells.contains(cellId);
+    }
+
+    /**
+     * @return копия набора заблокированных ячеек крафта (id 1-5)
+     */
+    public Set<Integer> getLockedCraftingCells(UUID uuid) {
+        Limits l = values.get(uuid);
+        return l == null ? Set.of() : Set.copyOf(l.lockedCraftingCells);
     }
 
     public boolean hasCustomValue(UUID uuid) {
@@ -137,14 +158,16 @@ public final class InventoryDataManager {
 
     /**
      * Все открытые слоты игрока в нумерации PlayerInventory:
-     * первые N слотов хранилища + открытые части экипировки.
+     * первые N слотов хранилища + вся броня/оффхенд, минус ручные блокировки.
      */
     public Set<Integer> getUnlockedSlots(UUID uuid) {
         Set<Integer> result = new HashSet<>(InventoryComputer.unlockedStorageSlots(getSlots(uuid)));
         for (EquipmentPart part : EquipmentPart.values()) {
-            if (isPartOpen(uuid, part)) {
-                result.add(part.getSlot());
-            }
+            result.add(part.getSlot());
+        }
+        Limits l = values.get(uuid);
+        if (l != null) {
+            result.removeAll(l.lockedCells);
         }
         return result;
     }
@@ -160,17 +183,46 @@ public final class InventoryDataManager {
 
     public void setPartsOpen(UUID uuid, Collection<EquipmentPart> parts, boolean open) {
         Limits l = values.computeIfAbsent(uuid, k -> new Limits());
-        if (open) {
-            l.closed.removeAll(parts);
-        } else {
-            l.closed.addAll(parts);
+        for (EquipmentPart part : parts) {
+            if (open) {
+                l.lockedCells.remove(part.getSlot());
+            } else {
+                l.lockedCells.add(part.getSlot());
+            }
         }
         cleanup(uuid, l);
         save();
     }
 
     /**
-     * Сбрасывает всё: и слоты, и экипировку.
+     * Индивидуально блокирует/разблокирует конкретную ячейку PlayerInventory (0-40).
+     * В отличие от {@link #setSlots}, никогда не "открывает" слот сверх лимита N —
+     * только добавляет/снимает точечную блокировку.
+     */
+    public void setCellLocked(UUID uuid, int slot, boolean locked) {
+        Limits l = values.computeIfAbsent(uuid, k -> new Limits());
+        if (locked) {
+            l.lockedCells.add(slot);
+        } else {
+            l.lockedCells.remove(slot);
+        }
+        cleanup(uuid, l);
+        save();
+    }
+
+    public void setCraftingCellLocked(UUID uuid, int cellId, boolean locked) {
+        Limits l = values.computeIfAbsent(uuid, k -> new Limits());
+        if (locked) {
+            l.lockedCraftingCells.add(cellId);
+        } else {
+            l.lockedCraftingCells.remove(cellId);
+        }
+        cleanup(uuid, l);
+        save();
+    }
+
+    /**
+     * Сбрасывает всё: слоты, экипировку, ручные блокировки и крафт.
      */
     public void reset(UUID uuid) {
         values.remove(uuid);

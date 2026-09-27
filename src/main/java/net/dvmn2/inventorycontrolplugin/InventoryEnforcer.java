@@ -13,11 +13,9 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockDispenseArmorEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
-import org.bukkit.event.inventory.ClickType;
-import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryCreativeEvent;
-import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.*;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 
@@ -35,23 +33,33 @@ import java.util.*;
  * пытается разложить по открытым слотам хранилища (хотбар → основной
  * инвентарь снизу вверх), а то, что не влезло, выбрасывает на землю.
  * <p>
- * Клиентский мод получает список закрытых слотов и рисует их как недоступные;
- * сервер при этом остаётся единственным источником истины.
+ * Отдельно от слотов может быть заблокирован личный крафт 2x2 (сетка в
+ * собственном инвентаре игрока, не верстак) — см. {@link #isCraftingLocked(Player)}.
+ * <p>
+ * В креативном режиме (и с правом bypass) ограничения не действуют вообще —
+ * ни на слоты, ни на крафт.
+ * <p>
+ * Клиентский мод получает список закрытых слотов и флаг крафта и рисует их
+ * как недоступные; сервер при этом остаётся единственным источником истины.
  */
 public final class InventoryEnforcer implements Listener {
 
     /**
      * Канал plugin-message для клиентского Fabric-мода. Формат:
-     * VarInt count, затем count × VarInt slot (нумерация PlayerInventory).
+     * VarInt count, затем count × VarInt slot (нумерация PlayerInventory),
+     * затем 1 байт — заблокирован ли личный крафт 2x2.
      */
     public static final String LOCKED_SLOTS_CHANNEL = "dvmn2:locked_slots";
 
+    /**
+     * Снимок того, что последний раз отправили конкретному игроку — чтобы не слать пакет зря.
+     */
+    private record SentState(Set<Integer> locked, Set<Integer> craftingLockedCells) {
+    }
+
     private final InventoryControlPlugin plugin;
 
-    /**
-     * Что мы последний раз отправили каждому игроку — чтобы не слать пакет зря.
-     */
-    private final Map<UUID, Set<Integer>> lastSentLocked = new HashMap<>();
+    private final Map<UUID, SentState> lastSentLocked = new HashMap<>();
 
     public InventoryEnforcer(InventoryControlPlugin plugin) {
         this.plugin = plugin;
@@ -62,7 +70,7 @@ public final class InventoryEnforcer implements Listener {
     // ------------------------------------------------------------------
 
     /**
-     * Множество открытых слотов игрока. Игрок с правом bypass — без ограничений.
+     * Множество открытых слотов игрока. Игрок с правом bypass или в креативе — без ограничений.
      */
     public Set<Integer> unlockedFor(Player player) {
         if (player.hasPermission(InventoryControlPlugin.BYPASS_PERMISSION)
@@ -70,6 +78,14 @@ public final class InventoryEnforcer implements Listener {
             return InventoryComputer.allSlots();
         }
         return plugin.getDataManager().getUnlockedSlots(player.getUniqueId());
+    }
+
+    public Set<Integer> lockedCraftingCellsFor(Player player) {
+        if (player.hasPermission(InventoryControlPlugin.BYPASS_PERMISSION)
+                || player.getGameMode() == GameMode.CREATIVE) {
+            return Set.of();
+        }
+        return plugin.getDataManager().getLockedCraftingCells(player.getUniqueId());
     }
 
     /**
@@ -80,6 +96,7 @@ public final class InventoryEnforcer implements Listener {
         PlayerInventory inv = player.getInventory();
 
         evictLockedSlots(player, inv, unlocked);
+        enforceCraftingLock(player);
         syncLockedSlots(player, unlocked);
         ensureHeldSlotOpen(inv, unlocked);
     }
@@ -119,6 +136,37 @@ public final class InventoryEnforcer implements Listener {
                 player.getWorld().dropItemNaturally(player.getLocation(), leftover,
                         dropped -> dropped.setPickupDelay(40));
             }
+        }
+    }
+
+    private void enforceCraftingLock(Player player) {
+        Set<Integer> lockedCells = lockedCraftingCellsFor(player);
+        if (lockedCells.isEmpty()) {
+            return;
+        }
+        Inventory top = player.getOpenInventory().getTopInventory();
+        if (top.getType() != InventoryType.CRAFTING) {
+            return;
+        }
+        boolean changed = false;
+        for (int raw = 0; raw < top.getSize(); raw++) {
+            CraftingCell cell = CraftingCell.byRawSlot(raw);
+            if (cell == null || !lockedCells.contains(cell.getId())) {
+                continue;
+            }
+            ItemStack item = top.getItem(raw);
+            if (isEmpty(item)) {
+                continue;
+            }
+            if (raw != 0) { // 0 — результат, его не выбрасываем, просто чистим
+                player.getWorld().dropItemNaturally(player.getLocation(), item.clone(),
+                        dropped -> dropped.setPickupDelay(40));
+            }
+            top.setItem(raw, null);
+            changed = true;
+        }
+        if (changed) {
+            player.updateInventory();
         }
     }
 
@@ -216,8 +264,8 @@ public final class InventoryEnforcer implements Listener {
     }
 
     /**
-     * Шлёт клиентскому моду список закрытых слотов — только если он изменился
-     * с прошлой отправки и мод зарегистрировал канал.
+     * Шлёт клиентскому моду список закрытых слотов и флаг крафта — только если
+     * что-то изменилось с прошлой отправки и мод зарегистрировал канал.
      */
     private void syncLockedSlots(Player player, Set<Integer> unlocked) {
         if (!hasMod(player)) {
@@ -230,7 +278,9 @@ public final class InventoryEnforcer implements Listener {
                 locked.add(slot);
             }
         }
-        if (locked.equals(lastSentLocked.get(player.getUniqueId()))) {
+        Set<Integer> craftingLockedCells = new TreeSet<>(lockedCraftingCellsFor(player));
+        SentState state = new SentState(locked, craftingLockedCells);
+        if (state.equals(lastSentLocked.get(player.getUniqueId()))) {
             return;
         }
 
@@ -241,6 +291,10 @@ public final class InventoryEnforcer implements Listener {
             for (int slot : locked) {
                 writeVarInt(out, slot);
             }
+            writeVarInt(out, craftingLockedCells.size());
+            for (int cellId : craftingLockedCells) {
+                writeVarInt(out, cellId);
+            }
         } catch (IOException ex) {
             plugin.getLogger().warning("Не удалось сформировать пакет locked_slots: " + ex.getMessage());
             return;
@@ -248,7 +302,7 @@ public final class InventoryEnforcer implements Listener {
 
         try {
             player.sendPluginMessage(plugin, LOCKED_SLOTS_CHANNEL, bytes.toByteArray());
-            lastSentLocked.put(player.getUniqueId(), locked);
+            lastSentLocked.put(player.getUniqueId(), state);
         } catch (IllegalArgumentException ex) {
             // Канал не зарегистрирован как исходящий — см. onEnable().
         }
@@ -275,7 +329,7 @@ public final class InventoryEnforcer implements Listener {
     }
 
     // ------------------------------------------------------------------
-    // Вход / выход / проверка мода
+    // Вход / выход / проверка мода / смена режима игры
     // ------------------------------------------------------------------
 
     @EventHandler
@@ -296,18 +350,6 @@ public final class InventoryEnforcer implements Listener {
     }
 
     /**
-     * PlayerGameModeChangeEvent прилетает ДО фактической смены режима — сам режим
-     * CraftBukkit проставит игроку сразу после обработки события, в этом же тике.
-     * Поэтому enforce() зовём не прямо здесь (getGameMode() ещё вернёт старое
-     * значение), а через scheduleEnforce — она выполнится уже на следующем тике,
-     * когда новый режим точно применён.
-     */
-    @EventHandler(ignoreCancelled = true)
-    public void onGameModeChange(PlayerGameModeChangeEvent event) {
-        scheduleEnforce(event.getPlayer(), true);
-    }
-
-    /**
      * Клиент с модом регистрирует наш канал уже после входа — в этот момент
      * шлём ему актуальный список закрытых слотов.
      */
@@ -319,6 +361,17 @@ public final class InventoryEnforcer implements Listener {
         Player player = event.getPlayer();
         lastSentLocked.remove(player.getUniqueId());
         enforce(player);
+    }
+
+    /**
+     * Смена режима игры (например, /gamemode или переключение через меню) не
+     * ждёт периодической подстраховки — сразу пересчитываем и досылаем клиенту.
+     * Событие прилетает до фактической смены режима, поэтому enforce() зовём
+     * через scheduleEnforce (на следующем тике), а не прямо в хендлере.
+     */
+    @EventHandler(ignoreCancelled = true)
+    public void onGameModeChange(PlayerGameModeChangeEvent event) {
+        scheduleEnforce(event.getPlayer(), true);
     }
 
     private void scheduleModCheck(Player player) {
@@ -361,6 +414,15 @@ public final class InventoryEnforcer implements Listener {
         if (event.getClick() == ClickType.SWAP_OFFHAND && !unlocked.contains(InventoryComputer.OFFHAND_SLOT)) {
             deny = true;
         }
+
+        if (event.getView().getTopInventory().getType() == InventoryType.CRAFTING
+                && event.getRawSlot() >= 0 && event.getRawSlot() <= 4) {
+            CraftingCell cell = CraftingCell.byRawSlot(event.getRawSlot());
+            if (cell != null && lockedCraftingCellsFor(player).contains(cell.getId())) {
+                deny = true;
+            }
+        }
+
         if (deny) {
             event.setCancelled(true);
         }
@@ -377,8 +439,19 @@ public final class InventoryEnforcer implements Listener {
         }
         Set<Integer> unlocked = unlockedFor(player);
         PlayerInventory playerInv = player.getInventory();
+// СТАЛО:
+        Set<Integer> lockedCraftCells = lockedCraftingCellsFor(player);
+        boolean craftingTop = event.getView().getTopInventory().getType() == InventoryType.CRAFTING;
 
         for (int rawSlot : event.getRawSlots()) {
+            if (craftingTop && rawSlot >= 0 && rawSlot <= 4) {
+                CraftingCell cell = CraftingCell.byRawSlot(rawSlot);
+                if (cell != null && lockedCraftCells.contains(cell.getId())) {
+                    event.setCancelled(true);
+                    scheduleEnforce(player, true);
+                    return;
+                }
+            }
             if (event.getView().getInventory(rawSlot) != playerInv) {
                 continue; // слот принадлежит не инвентарю игрока
             }

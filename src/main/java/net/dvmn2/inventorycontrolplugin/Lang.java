@@ -7,29 +7,8 @@ import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * Простая система локализации плагина: русский (ru) и английский (en).
- * <p>
- * Язык задаётся в config.yml (settings.language):
- * - "ru"   — всегда русский;
- * - "en"   — всегда английский;
- * - "auto" (по умолчанию) — язык определяется индивидуально для каждого
- * отправителя: для игрока берётся его игровая локаль (Player#locale()),
- * для консоли/прочих — английский.
- * <p>
- * Simple RU/EN localization for the plugin.
- * Language is configured via config.yml (settings.language):
- * - "ru"   — always Russian;
- * - "en"   — always English;
- * - "auto" (default) — resolved per sender: for a player, use their
- * client locale (Player#locale()); for console/other senders,
- * fall back to English.
- */
 public final class Lang {
 
-    /**
-     * Ключи всех локализуемых сообщений плагина. / Keys for all localizable plugin messages.
-     */
     public enum Key {
         PLAYER_NOT_FOUND,
         SET_SUCCESS,
@@ -40,7 +19,16 @@ public final class Lang {
         EQUIP_CLOSED,
         UNKNOWN_PART,
         RESET_SUCCESS,
-        KICK_NO_MOD
+        KICK_NO_MOD,
+        CELL_LOCKED,
+        CELL_UNLOCKED,
+        CRAFTING_CELL_LOCKED,
+        CRAFTING_CELL_UNLOCKED,
+        GET_LOCKED_CELLS,
+        GET_LOCKED_CELLS_NONE,
+        GET_CRAFTING_CELLS_LOCKED,
+        GET_CRAFTING_CELLS_NONE,
+        GUI_ONLY_PLAYER
     }
 
     private static final Map<Key, String> RU = new EnumMap<>(Key.class);
@@ -55,8 +43,17 @@ public final class Lang {
         RU.put(Key.EQUIP_OPENED, "Игроку %s открыто: %s");
         RU.put(Key.EQUIP_CLOSED, "Игроку %s закрыто: %s");
         RU.put(Key.UNKNOWN_PART, "Неизвестная часть экипировки: %s. Доступно: %s");
-        RU.put(Key.RESET_SUCCESS, "Игроку %s сброшены все ограничения (слоты и экипировка).");
+        RU.put(Key.RESET_SUCCESS, "Игроку %s сброшены все ограничения.");
         RU.put(Key.KICK_NO_MOD, "Для игры на этом сервере нужен клиентский мод InventoryControl.");
+        RU.put(Key.CELL_LOCKED, "Игроку %s заблокирована ячейка %d.");
+        RU.put(Key.CELL_UNLOCKED, "Игроку %s разблокирована ячейка %d.");
+        RU.put(Key.CRAFTING_CELL_LOCKED, "Игроку %s заблокирована ячейка крафта %d.");
+        RU.put(Key.CRAFTING_CELL_UNLOCKED, "Игроку %s разблокирована ячейка крафта %d.");
+        RU.put(Key.GET_LOCKED_CELLS, "Индивидуально заблокированные ячейки у %s: %s");
+        RU.put(Key.GET_LOCKED_CELLS_NONE, "У %s нет индивидуально заблокированных ячеек.");
+        RU.put(Key.GET_CRAFTING_CELLS_LOCKED, "Заблокированные ячейки крафта у %s: %s");
+        RU.put(Key.GET_CRAFTING_CELLS_NONE, "У %s все ячейки крафта открыты.");
+        RU.put(Key.GUI_ONLY_PLAYER, "Эту команду может выполнить только игрок.");
 
         EN.put(Key.PLAYER_NOT_FOUND, "Player not found.");
         EN.put(Key.SET_SUCCESS, "Set %s's open slots (hotbar + inventory) to: %d / %d");
@@ -66,22 +63,24 @@ public final class Lang {
         EN.put(Key.EQUIP_OPENED, "Opened for %s: %s");
         EN.put(Key.EQUIP_CLOSED, "Closed for %s: %s");
         EN.put(Key.UNKNOWN_PART, "Unknown equipment part: %s. Available: %s");
-        EN.put(Key.RESET_SUCCESS, "Reset all of %s's restrictions (slots and equipment).");
+        EN.put(Key.RESET_SUCCESS, "Reset all of %s's restrictions.");
         EN.put(Key.KICK_NO_MOD, "The InventoryControl client mod is required to play on this server.");
+        EN.put(Key.CELL_LOCKED, "Locked cell %2$d for %1$s.");
+        EN.put(Key.CELL_UNLOCKED, "Unlocked cell %2$d for %1$s.");
+        EN.put(Key.CRAFTING_CELL_LOCKED, "Locked crafting cell %2$d for %1$s.");
+        EN.put(Key.CRAFTING_CELL_UNLOCKED, "Unlocked crafting cell %2$d for %1$s.");
+        EN.put(Key.GET_LOCKED_CELLS, "%s's individually locked cells: %s");
+        EN.put(Key.GET_LOCKED_CELLS_NONE, "%s has no individually locked cells.");
+        EN.put(Key.GET_CRAFTING_CELLS_LOCKED, "%s's locked crafting cells: %s");
+        EN.put(Key.GET_CRAFTING_CELLS_NONE, "All of %s's crafting cells are open.");
+        EN.put(Key.GUI_ONLY_PLAYER, "This command can only be run by a player.");
     }
 
-    /**
-     * "ru", "en" или "auto" — значение из config.yml. / "ru", "en" or "auto" from config.yml.
-     */
     private static volatile String configuredLanguage = "auto";
 
     private Lang() {
     }
 
-    /**
-     * Устанавливает язык плагина из конфига.
-     * Setting the plugin language from the config.
-     */
     public static void setLanguage(String language) {
         if (language == null || language.isBlank()) {
             configuredLanguage = "auto";
@@ -90,12 +89,6 @@ public final class Lang {
         configuredLanguage = language.toLowerCase(Locale.ROOT);
     }
 
-    /**
-     * Возвращает локализованное сообщение для конкретного отправителя.
-     * Поддерживает подстановку аргументов через {@link String#format}.
-     * Returns the localized message for a specific sender, with
-     * {@link String#format} argument substitution.
-     */
     public static String get(Key key, CommandSender sender, Object... args) {
         Map<Key, String> table = resolveTable(sender);
         String pattern = table.getOrDefault(key, RU.get(key));
@@ -106,19 +99,15 @@ public final class Lang {
         return switch (configuredLanguage) {
             case "en" -> EN;
             case "ru" -> RU;
-            default -> autoResolve(sender); // "auto" или некорректное значение
+            default -> autoResolve(sender);
         };
     }
 
     private static Map<Key, String> autoResolve(CommandSender sender) {
         if (sender instanceof Player player) {
-            // Player#locale() отдаёт java.util.Locale игрока, выставленную в настройках клиента.
-            // Player#locale() returns the client-configured java.util.Locale.
             String langCode = player.locale().getLanguage();
             return "ru".equalsIgnoreCase(langCode) ? RU : EN;
         }
-        // Консоль/RCON и т.п. — по умолчанию английский.
-        // Console/RCON etc. — default to English.
         return EN;
     }
 }

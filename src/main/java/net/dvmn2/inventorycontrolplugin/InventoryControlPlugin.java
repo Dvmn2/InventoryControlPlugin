@@ -2,6 +2,7 @@ package net.dvmn2.inventorycontrolplugin;
 
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.dvmn2.inventorycontrolplugin.commands.InventoryCommand;
+import net.dvmn2.inventorycontrolplugin.gui.SlotOverviewGuiListener;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.permissions.Permission;
@@ -41,6 +42,9 @@ public final class InventoryControlPlugin extends JavaPlugin {
         this.enforcer = new InventoryEnforcer(this);
         getServer().getPluginManager().registerEvents(enforcer, this);
 
+        getServer().getPluginManager().registerEvents(enforcer, this);
+        getServer().getPluginManager().registerEvents(new SlotOverviewGuiListener(this), this);
+
         // Канал для клиентского Fabric-мода (визуальная блокировка слотов на клиенте).
         getServer().getMessenger().registerOutgoingPluginChannel(this, InventoryEnforcer.LOCKED_SLOTS_CHANNEL);
 
@@ -58,7 +62,7 @@ public final class InventoryControlPlugin extends JavaPlugin {
             }
         }, 5L, 5L);
 
-        getLogger().info("InventoryControlPlugin включён. Команда: /inventorycontrol set|get|reset|equip <игрок> ... (слотов: 0-"
+        getLogger().info("InventoryControlPlugin включён. Команда: /inventorycontrol set|cell|equip|crafting|gui|get|reset <игрок> ... (слотов: 0-"
                 + InventoryComputer.MAX_SLOTS + ")");
     }
 
