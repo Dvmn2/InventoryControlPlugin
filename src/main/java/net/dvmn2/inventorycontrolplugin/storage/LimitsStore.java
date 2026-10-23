@@ -1,26 +1,20 @@
 package net.dvmn2.inventorycontrolplugin.storage;
 
+import net.dvmn2.inventorycontrolplugin.model.CraftingCell;
+import net.dvmn2.inventorycontrolplugin.model.PlayerLimits;
+import net.dvmn2.inventorycontrolplugin.model.SlotLayout;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.UUID;
+import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import net.dvmn2.inventorycontrolplugin.model.CraftingCell;
-import net.dvmn2.inventorycontrolplugin.model.PlayerLimits;
-import net.dvmn2.inventorycontrolplugin.model.SlotLayout;
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.file.YamlConfiguration;
 
 /**
  * Reads and writes {@code players.yml}.
@@ -40,7 +34,9 @@ public final class LimitsStore {
 
     private static final int FORMAT_VERSION = 1;
 
-    /** Upper bound of list entries read per player; real data never exceeds 41. */
+    /**
+     * Upper bound of list entries read per player; real data never exceeds 41.
+     */
     private static final int MAX_LIST_ENTRIES = 256;
 
     private final Path file;
@@ -53,7 +49,9 @@ public final class LimitsStore {
         this.log = log;
     }
 
-    /** Loads all player records; invalid entries are skipped with a warning. */
+    /**
+     * Loads all player records; invalid entries are skipped with a warning.
+     */
     public Map<UUID, PlayerLimits> load() {
         Map<UUID, PlayerLimits> result = new HashMap<>();
         if (!Files.exists(file)) {
@@ -137,7 +135,10 @@ public final class LimitsStore {
                 log.warning(file.getFileName() + ": invalid crafting cell " + id + " of " + key);
             }
         }
-        PlayerLimits limits = new PlayerLimits(cells, craftingCells);
+        PlayerLimits limits = new PlayerLimits(
+                Set.copyOf(cells),
+                Set.copyOf(craftingCells)
+        );
         if (!limits.isDefault()) {
             result.put(uuid, limits);
         }
