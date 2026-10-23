@@ -1,85 +1,66 @@
 package net.dvmn2.inventorycontrolplugin;
 
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
-import net.dvmn2.inventorycontrolplugin.commands.InventoryCommand;
+import net.dvmn2.inventorycontrolplugin.command.InventoryControlCommand;
 import net.dvmn2.inventorycontrolplugin.gui.SlotOverviewGui;
 import net.dvmn2.inventorycontrolplugin.gui.SlotOverviewGuiListener;
-import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
-import org.bukkit.permissions.Permission;
-import org.bukkit.permissions.PermissionDefault;
+import net.dvmn2.inventorycontrolplugin.storage.LimitsStore;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Composition root: builds the components, registers them and shuts them down.
+ */
 public final class InventoryControlPlugin extends JavaPlugin {
 
-    /**
-     * Игроки с этим правом не подпадают ни под какие ограничения и не кикаются за отсутствие мода.
-     * По умолчанию его нет даже у операторов — выдавать явно (LuckPerms и т.п.).
-     */
-    public static final String BYPASS_PERMISSION = "inventorycontrol.bypass";
+    private static final String DATA_FILE = "players.yml";
 
-    private InventoryDataManager dataManager;
-    private InventoryEnforcer enforcer;
+    private volatile InventoryControlSettings settings;
+    private LimitsManager limits;
+    private InventoryManager inventories;
 
     @Override
     public void onEnable() {
-        if (!getDataFolder().exists()) {
-            getDataFolder().mkdirs();
-        }
-
         saveDefaultConfig();
-        Lang.setLanguage(getConfig().getString("settings.language", "auto"));
+        reloadSettings();
 
-        if (getServer().getPluginManager().getPermission(BYPASS_PERMISSION) == null) {
-            getServer().getPluginManager().addPermission(new Permission(
-                    BYPASS_PERMISSION,
-                    "Не подпадает под ограничения слотов и проверку клиентского мода",
-                    PermissionDefault.FALSE));
-        }
+        limits = new LimitsManager(this, new LimitsStore(getDataFolder().toPath().resolve(DATA_FILE), getLogger()));
+        limits.load();
+        inventories = new InventoryManager(this, () -> settings, limits);
 
-        this.dataManager = new InventoryDataManager(this);
-        this.dataManager.load();
+        // The window listener goes first so that its cancellations are visible to InventoryListener.
+        getServer().getPluginManager().registerEvents(new SlotOverviewGuiListener(limits, inventories), this);
+        getServer().getPluginManager().registerEvents(new InventoryListener(inventories), this);
 
-        this.enforcer = new InventoryEnforcer(this);
-        getServer().getPluginManager().registerEvents(enforcer, this);
-        getServer().getPluginManager().registerEvents(new SlotOverviewGuiListener(this), this);
-
-        // Канал для клиентского Fabric-мода (визуальная блокировка слотов на клиенте).
-        getServer().getMessenger().registerOutgoingPluginChannel(this, InventoryEnforcer.LOCKED_SLOTS_CHANNEL);
-
+        InventoryControlCommand command = new InventoryControlCommand(this, limits, inventories);
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
-                event.registrar().register(
-                        new InventoryCommand(this).build().build(),
-                        "Управление количеством доступных слотов инвентаря игрока"
-                ));
+                event.registrar().register(command.build(), "Control which inventory slots a player can use"));
 
-        // Периодическая подстраховка (хопперы, /give и прочее в обход событий).
-        // enforce() дешёвый: если в закрытых слотах пусто и список слотов не менялся — ничего не делает.
-        Bukkit.getScheduler().runTaskTimer(this, () -> {
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                enforcer.enforce(p);
-            }
-        }, 5L, 5L);
+        limits.start();
+        inventories.start();
 
-        getLogger().info("InventoryControlPlugin включён. Команда: /inventorycontrol set|cell|equip|crafting|gui|get|reset <игрок> ... (слотов: 0-"
-                + InventoryComputer.MAX_SLOTS + ")");
+        getLogger().info("Enabled. Players with restrictions: " + limits.getRestrictedPlayerCount() + ".");
     }
 
     @Override
     public void onDisable() {
-        // Подстраховка: если кто-то смотрел /inventorycontrol gui в момент выключения,
-        // его временно скрытый инвентарь нужно вернуть, а не потерять.
-        SlotOverviewGui.restoreAll(this);
-        if (dataManager != null) {
-            dataManager.save();
+        SlotOverviewGui.closeAll(getServer());
+        if (inventories != null) {
+            inventories.shutdown();
+        }
+        if (limits != null) {
+            limits.shutdown();
         }
     }
 
-    public InventoryDataManager getDataManager() {
-        return dataManager;
+    /** Re-reads config.yml and applies it without losing runtime state. */
+    public void reloadAll() {
+        reloadConfig();
+        reloadSettings();
+        inventories.onSettingsReloaded();
     }
 
-    public InventoryEnforcer getEnforcer() {
-        return enforcer;
+    private void reloadSettings() {
+        settings = InventoryControlSettings.parse(getConfig(), getLogger());
+        Lang.setLanguage(settings.language());
     }
 }

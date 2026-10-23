@@ -1,12 +1,13 @@
 package net.dvmn2.inventorycontrolplugin.gui;
 
+import java.util.UUID;
+
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 
-import java.util.UUID;
-
 /**
- * Маркер-держатель GUI-обзора заблокированных ячеек игрока (см. {@link SlotOverviewGui}).
+ * Marker holder of the slot overview window ({@link SlotOverviewGui}). Holds the player being edited.
+ * Used on the main thread only.
  */
 public final class SlotOverviewHolder implements InventoryHolder {
 
@@ -17,10 +18,6 @@ public final class SlotOverviewHolder implements InventoryHolder {
         this.targetUuid = targetUuid;
     }
 
-    void setInventory(Inventory inventory) {
-        this.inventory = inventory;
-    }
-
     public UUID getTargetUuid() {
         return targetUuid;
     }
@@ -28,5 +25,9 @@ public final class SlotOverviewHolder implements InventoryHolder {
     @Override
     public Inventory getInventory() {
         return inventory;
+    }
+
+    void setInventory(Inventory inventory) {
+        this.inventory = inventory;
     }
 }

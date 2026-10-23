@@ -1,11 +1,20 @@
-# Язык сообщений плагина: "ru", "en" или "auto".
-# "auto" — язык определяется индивидуально для каждого отправителя команды:
-# для игрока берётся его игровая локаль, для консоли — английский.
-#
-# Plugin message language: "ru", "en" or "auto".
-# "auto" resolves per command sender: a player's client locale is used,
-# console falls back to English.
+# InventoryControlPlugin configuration.
+# Per-player slot limits are stored in players.yml and are managed with /inventorycontrol.
+
 settings:
+  # Plugin message language: "ru", "en" or "auto".
+  # "auto" uses the player's client locale; the console always gets English.
   language: auto
-  require-client-mod: true
+
+  # Kick players whose client does not have the InventoryControl mod.
+  # Players with the inventorycontrol.bypass permission are never kicked.
+  # Values: true or false. Default: false.
+  require-client-mod: false
+
+  # How long a joining player has to register the mod channel before being kicked, in seconds (1..300).
+  # Only used when require-client-mod is true. Default: 10.
   mod-check-timeout-seconds: 10
+
+  # How often every online player's inventory is re-checked, in ticks (1..100).
+  # Lower values react faster to hoppers, /give and similar, higher values cost less. Default: 5.
+  enforce-interval-ticks: 5

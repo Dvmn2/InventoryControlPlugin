@@ -1,4 +1,5 @@
 name: InventoryControlPlugin
+description: Locks individual player inventory slots and syncs the locked slots to the InventoryControl client mod.
 version: '${version}'
 
 main: net.dvmn2.inventorycontrolplugin.InventoryControlPlugin
@@ -8,6 +9,18 @@ load: POSTWORLD
 authors: [ DVMN2 ]
 
 permissions:
-  inventorycontrol.admin:
-    description: Доступ к командам /inventorycontrol set|get|reset
+  inventorycontrol.manage:
+    description: Use /inventorycontrol set, cell, equip, crafting, gui, get and reset
     default: op
+  inventorycontrol.reload:
+    description: Use /inventorycontrol reload
+    default: op
+  inventorycontrol.bypass:
+    description: Ignore all slot restrictions and the client mod requirement
+    default: false
+  inventorycontrol.admin:
+    description: All administrative InventoryControl permissions
+    default: op
+    children:
+      inventorycontrol.manage: true
+      inventorycontrol.reload: true

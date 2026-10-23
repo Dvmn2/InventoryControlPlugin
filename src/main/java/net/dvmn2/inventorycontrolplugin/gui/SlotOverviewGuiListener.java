@@ -1,26 +1,30 @@
 package net.dvmn2.inventorycontrolplugin.gui;
 
-import net.dvmn2.inventorycontrolplugin.InventoryControlPlugin;
+import net.dvmn2.inventorycontrolplugin.InventoryManager;
+import net.dvmn2.inventorycontrolplugin.LimitsManager;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 
 /**
- * GUI обзора ячеек ({@link SlotOverviewGui}) — полностью read-only снаружи:
- * ни забрать, ни положить предмет нельзя ни в верхнюю (обзор), ни в нижнюю
- * (временно скрытый инвентарь администратора) часть окна. Клик по обычной
- * (не placeholder) ячейке обзора переключает её блокировку.
+ * Makes the overview window ({@link SlotOverviewGui}) read-only: no item can be taken or placed in either half of
+ * the window. A click on a pane of the top inventory toggles that cell.
+ * <p>
+ * Must be registered before {@link net.dvmn2.inventorycontrolplugin.InventoryListener}, so that the
+ * cancellation here is already visible to its {@code ignoreCancelled} handlers.
  */
 public final class SlotOverviewGuiListener implements Listener {
 
-    private final InventoryControlPlugin plugin;
+    private final LimitsManager limits;
+    private final InventoryManager inventories;
 
-    public SlotOverviewGuiListener(InventoryControlPlugin plugin) {
-        this.plugin = plugin;
+    public SlotOverviewGuiListener(LimitsManager limits, InventoryManager inventories) {
+        this.limits = limits;
+        this.inventories = inventories;
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -28,26 +32,25 @@ public final class SlotOverviewGuiListener implements Listener {
         if (!(event.getView().getTopInventory().getHolder() instanceof SlotOverviewHolder holder)) {
             return;
         }
+        // Cancels clicks in both halves, shift-clicks from the lower inventory and number-key swaps.
         event.setCancelled(true);
         if (event.getClickedInventory() != event.getView().getTopInventory()) {
-            return; // клик по (скрытому) инвентарю администратора снизу — просто игнорируем
+            return;
         }
-        SlotOverviewGui.handleClick(plugin, holder.getTargetUuid(), event.getRawSlot());
-        SlotOverviewGui.render(holder.getInventory(), holder.getTargetUuid(), plugin.getDataManager());
+        if (!SlotOverviewGui.toggle(limits, holder.getTargetUuid(), event.getRawSlot())) {
+            return;
+        }
+        Player target = Bukkit.getPlayer(holder.getTargetUuid());
+        if (target != null) {
+            inventories.enforce(target);
+        }
+        SlotOverviewGui.render(holder.getInventory(), holder.getTargetUuid(), limits);
     }
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onDrag(InventoryDragEvent event) {
         if (event.getView().getTopInventory().getHolder() instanceof SlotOverviewHolder) {
             event.setCancelled(true);
-        }
-    }
-
-    @EventHandler
-    public void onClose(InventoryCloseEvent event) {
-        if (event.getView().getTopInventory().getHolder() instanceof SlotOverviewHolder
-                && event.getPlayer() instanceof Player admin) {
-            SlotOverviewGui.restore(admin);
         }
     }
 }
